@@ -45,8 +45,8 @@ class NotificationServer
         $this->server = new Server("0.0.0.0", 9502); //new Server("0.0.0.0", 9502, SWOOLE_PROCESS, SWOOLE_SOCK_TCP | SWOOLE_SSL);
         
         $this->server->set([
-            // 'ssl_cert_file' => '/etc/letsencrypt/live/winsstarts.com/fullchain.pem',
-            // 'ssl_key_file' => '/etc/letsencrypt/live/winsstarts.com/privkey.pem',
+            'ssl_cert_file' => '/etc/letsencrypt/live/winsstarts.com/fullchain.pem',
+            'ssl_key_file' => '/etc/letsencrypt/live/winsstarts.com/privkey.pem',
             'open_http2_protocol' => true,
             'heartbeat_check_interval' => 60,
             'heartbeat_idle_time' => 120,
@@ -161,7 +161,7 @@ class NotificationServer
     
     private function handleMessage(array $data, int $fd, int $userId): void
     {
-        Console::log2('data-------------> ', $data);
+        // Console::log2('data-------------> ', $data);
         switch ($data['action'] ?? '') {
             case 'ping':
                 $this->server->push($fd, json_encode(['type' => 'pong']));
@@ -276,7 +276,7 @@ class NotificationServer
         
         if ($notification) {
             $this->server->push($fd, $notification);
-            Console::info("Sent queued notification to User $userId");
+            // Console::info("Sent queued notification to User $userId");
         }
         
         // Check for notification count changes
@@ -286,7 +286,7 @@ class NotificationServer
     private function sendNotificationCount(int $userId, int $fd, bool $checkChanges = false): void
     {
         $newCounts = $this->notificationModel->getNotificationCounts((string)$userId);
-        Console::log2('Send pending notifications sendNotificationCount', $newCounts);
+        // Console::log2('Send pending notifications sendNotificationCount', $newCounts);
         
         if ($checkChanges) {
             $lastCountKey = "last_counts:$userId";
@@ -313,7 +313,7 @@ class NotificationServer
     private function processPendingNotifications(): void
     {
         $pending = $this->notificationModel->getPendingNotifications();
-        Console::log2('All pending notifications processPendingNotifications', $pending);
+        // Console::log2('All pending notifications processPendingNotifications', $pending);
         foreach ($pending as $notification) {
             $userId = (int)$notification['user_id'];
             $this->sendDirectNotification(
@@ -342,9 +342,9 @@ class NotificationServer
                     'user_id' => $userId,
                     'timestamp' => time()
                 ]);
-                Console::log2('Send pending notifications sendDirectNotification', $this->server->exist($fd));
-                Console::log2('Send pending notifications payload', $payload);
-                Console::log2('Send pending notifications connection', $connection);
+                // Console::log2('Send pending notifications sendDirectNotification', $this->server->exist($fd));
+                // Console::log2('Send pending notifications payload', $payload);
+                // Console::log2('Send pending notifications connection', $connection);
                 
                 if ($this->server->exist($fd)) {
                     $this->server->push($fd, $payload);

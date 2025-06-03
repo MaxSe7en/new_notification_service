@@ -53,7 +53,7 @@ class NotificationService
     private function sendWebSocketNotification(int $userId, string $message, string $event): bool
     {
         try {
-            Console::error("WebSocket notification sending: " . $message);
+            // Console::error("WebSocket notification sending: " . $message);
             // Check if user is connected via Redis
             $fd = $this->redis->hget(self::CONNECTION_KEY, $userId);
             
