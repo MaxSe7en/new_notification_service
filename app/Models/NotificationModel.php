@@ -113,7 +113,7 @@ class NotificationModel
                 'announcements' => $generalNote
             ];
         } catch (PDOException $e) {
-            error_log('Notification count error: ' . $e->getMessage());
+            Console::log2('Notification count error: ' , $e);
             return [
                 'system_notifications' => 0,
                 'general_notices' => 0,

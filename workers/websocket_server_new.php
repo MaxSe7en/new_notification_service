@@ -50,7 +50,7 @@ class NotificationServer
             'open_http2_protocol' => true,
             'heartbeat_check_interval' => 60,
             'heartbeat_idle_time' => 120,
-            'max_connection' => 10000,
+            'max_connection' => 1024,
             'task_worker_num' => 4,
             'enable_coroutine' => true,
         ]);
@@ -118,6 +118,7 @@ class NotificationServer
         // Send welcome message
         $server->push($request->fd, json_encode([
             'type' => 'connection',
+            'event' => 'connection',
             'status' => 'connected',
             'message' => 'Successfully connected to notification service'
         ]));
@@ -160,6 +161,7 @@ class NotificationServer
     
     private function handleMessage(array $data, int $fd, int $userId): void
     {
+        Console::log2('data-------------> ', $data);
         switch ($data['action'] ?? '') {
             case 'ping':
                 $this->server->push($fd, json_encode(['type' => 'pong']));
@@ -238,7 +240,7 @@ class NotificationServer
                     break;
             }
         } catch (\Exception $e) {
-            Console::error("Task error: " . $e->getMessage());
+            Console::error("Task error: " . $e);
         }
     }
     
@@ -284,6 +286,7 @@ class NotificationServer
     private function sendNotificationCount(int $userId, int $fd, bool $checkChanges = false): void
     {
         $newCounts = $this->notificationModel->getNotificationCounts((string)$userId);
+        Console::log2('Send pending notifications sendNotificationCount', $newCounts);
         
         if ($checkChanges) {
             $lastCountKey = "last_counts:$userId";
@@ -298,7 +301,8 @@ class NotificationServer
         
         $message = json_encode([
             'type' => 'notification_count',
-            'data' => $newCounts,
+            'event' => 'notification_count',
+            'message' => $newCounts,
             'user_id' => $userId,
             'timestamp' => time()
         ]);
@@ -309,7 +313,7 @@ class NotificationServer
     private function processPendingNotifications(): void
     {
         $pending = $this->notificationModel->getPendingNotifications();
-        
+        Console::log2('All pending notifications processPendingNotifications', $pending);
         foreach ($pending as $notification) {
             $userId = (int)$notification['user_id'];
             $this->sendDirectNotification(
@@ -338,6 +342,9 @@ class NotificationServer
                     'user_id' => $userId,
                     'timestamp' => time()
                 ]);
+                Console::log2('Send pending notifications sendDirectNotification', $this->server->exist($fd));
+                Console::log2('Send pending notifications payload', $payload);
+                Console::log2('Send pending notifications connection', $connection);
                 
                 if ($this->server->exist($fd)) {
                     $this->server->push($fd, $payload);
