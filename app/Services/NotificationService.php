@@ -186,16 +186,16 @@ class NotificationService
     {
         try {
             // Get user phone from database
-            $user = DatabaseAccessors::select("SELECT phone FROM users_test WHERE uid = ?", [$userId]);
+            $user = DatabaseAccessors::select("SELECT contact FROM users_test WHERE uid = ?", [$userId]);
             
-            if (!$user || empty($user['phone'])) {
+            if (!$user || empty($user['contact'])) {
                 Console::error("No phone found for user: $userId");
                 return false;
             }
             
             // Queue SMS for background processing
             $smsData = [
-                'to' => $user['phone'],
+                'to' => $user['contact'],
                 'message' => $message,
                 'user_id' => $userId,
                 'created_at' => date('Y-m-d H:i:s')
@@ -214,6 +214,7 @@ class NotificationService
     
     /**
      * Send push notification
+     * @status yet to implement
      */
     private function sendPushNotification(int $userId, string $message): bool
     {

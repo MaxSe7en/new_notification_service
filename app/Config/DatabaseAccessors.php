@@ -4,6 +4,7 @@ namespace App\Config;
 use App\Config\Database;
 use PDO;
 use PDOException;
+use App\Exceptions\Console;
 
 class DatabaseAccessors{
     private static ?PDO $db = null;
@@ -22,8 +23,10 @@ class DatabaseAccessors{
             $stmt->execute($params);
             return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
         } catch (PDOException $e) {
-            exit("Select Error: " . $e->getMessage());
-        }
+            Console::log2("Select Error: ", $e->getMessage());
+            return null;
+        }            
+
     }
 
 
@@ -33,7 +36,8 @@ class DatabaseAccessors{
             $stmt->execute($params);
             return $stmt->fetchAll(PDO::FETCH_ASSOC);
         } catch (PDOException $e) {
-            exit("SelectAll Error: " . $e->getMessage());
+            Console::log2("SelectAll Error: ", $e->getMessage());
+            return [];
         }
     }
 
@@ -42,7 +46,8 @@ class DatabaseAccessors{
             $stmt = self::connect()->prepare($query);
             return $stmt->execute($params);
         } catch (PDOException $e) {
-            echo "Insert Error: " . $e->getMessage();
+            Console::log2("Insert Error: ", $e->getMessage());
+            return false;
         }
     }
 
@@ -51,8 +56,8 @@ class DatabaseAccessors{
             $stmt = self::connect()->prepare($query);
             return $stmt->execute($params);
         } catch (PDOException $e) {
-            // exit("Update Error: " . $e->getMessage());
             echo 'Update Error'. $e->getMessage();
+            return false;
         }
     }
 
@@ -61,7 +66,8 @@ class DatabaseAccessors{
             $stmt = self::connect()->prepare($query);
             return $stmt->execute($params);
         } catch (PDOException $e) {
-            echo "Delete Error: " . $e->getMessage();
+            Console::log2("Delete Error: ", $e->getMessage());
+            return false;
         }
     }
 }
