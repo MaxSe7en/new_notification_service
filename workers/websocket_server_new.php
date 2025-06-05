@@ -327,6 +327,7 @@ class NotificationServer
     private function processPendingNotifications(): void
     {
         $pending = $this->notificationModel->getPendingNotifications();
+        if(empty($pending)) return;
         // Console::log2('All pending notifications processPendingNotifications', $pending);
         foreach ($pending as $notification) {
             $userId = (int) $notification['user_id'];
