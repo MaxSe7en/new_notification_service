@@ -14,7 +14,9 @@ class NotificationModel
 
     public function __construct()
     {
-        $this->db = Database::connect();
+        // Use the static connect method from DatabaseAccessors
+        // This will return the shared, managed PDO instance
+        $this->db = DatabaseAccessors::connect();
     }
 
     public function create($userId, $type, $message)
@@ -77,7 +79,8 @@ class NotificationModel
         $stmt->execute([':msgId' => $msgId]);
     }
 
-    public function getGeneralNotices(){
+    public function getGeneralNotices()
+    {
         $stmt = $this->db->query("SELECT * FROM notices WHERE ms_type = 'general'");
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
@@ -113,7 +116,7 @@ class NotificationModel
                 'announcements' => $generalNote
             ];
         } catch (PDOException $e) {
-            Console::log2('Notification count error: ' , $e);
+            Console::log2('Notification count error: ', $e);
             return [
                 'system_notifications' => 0,
                 'general_notices' => 0,
@@ -128,24 +131,24 @@ class NotificationModel
             $values = [];
             $params = [];
             $placeholder = [];
-            
+
             foreach ($userIds as $index => $userId) {
                 $userParam = ":user_id_{$index}";
                 $typeParam = ":type_{$index}";
                 $messageParam = ":message_{$index}";
-                
+
                 $placeholder[] = "({$userParam}, {$typeParam}, {$messageParam}, 'pending', NOW())";
-                
+
                 $params[$userParam] = $userId;
                 $params[$typeParam] = $type;
                 $params[$messageParam] = $message;
             }
-            
-            $sql = "INSERT INTO notifications (user_id, ms_type, message, status, created_at) VALUES " 
-                 . implode(', ', $placeholder);
-            
+
+            $sql = "INSERT INTO notifications (user_id, ms_type, message, status, created_at) VALUES "
+                . implode(', ', $placeholder);
+
             return DatabaseAccessors::insert($sql, $params);
-            
+
         } catch (\Exception $e) {
             throw new \Exception("Bulk insert failed: " . $e->getMessage());
         }
@@ -160,7 +163,7 @@ class NotificationModel
                 WHERE user_id = :user_id 
                 ORDER BY created_at DESC 
                 LIMIT :limit OFFSET :offset";
-        
+
         return DatabaseAccessors::selectAll($sql, [
             ':user_id' => $userId,
             ':limit' => $limit,
@@ -177,7 +180,7 @@ class NotificationModel
             "SELECT COUNT(*) as count FROM notifications WHERE user_id = :user_id",
             [':user_id' => $userId]
         );
-        
+
         return $result['count'] ?? 0;
     }
 
@@ -200,9 +203,9 @@ class NotificationModel
     {
         $sql = "DELETE FROM notifications 
                 WHERE created_at < DATE_SUB(NOW(), INTERVAL :days DAY)";
-        
+
         $result = DatabaseAccessors::delete($sql, [':days' => $daysOld]);
-        
+
         return $result ? $this->db->rowCount() : 0;
     }
 
@@ -212,12 +215,12 @@ class NotificationModel
     public function getUsersByGroups(array $groups): array
     {
         $placeholders = str_repeat('?,', count($groups) - 1) . '?';
-        
+
         $sql = "SELECT DISTINCT user_id FROM user_groups 
                 WHERE group_name IN ({$placeholders})";
-        
+
         $result = DatabaseAccessors::selectAll($sql, $groups);
-        
+
         return array_column($result, 'user_id');
     }
 }

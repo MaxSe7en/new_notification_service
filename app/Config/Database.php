@@ -1,14 +1,34 @@
 <?php
-
 namespace App\Config;
 
 use PDO;
+use PDOException;
 
 class Database
 {
-    public static function connect()
+    /**
+     * Connect to the database.
+     *
+     * @param array $options Optional PDO attributes.
+     * @return PDO
+     * @throws PDOException
+     */
+    public function connect(array $options = []): PDO
     {
-        return new PDO("mysql:host=localhost;dbname=lottery_test", "enzerhub", "enzerhub");
-        // return new PDO("mysql:host=192.168.1.51;dbname=lottery_test", "enzerhub", "enzerhub");
+        $dsn = "mysql:host=localhost;dbname=lottery_test";
+        $username = "enzerhub";
+        $password = "enzerhub";
+
+        // Define default options, excluding ATTR_PERSISTENT
+        $defaultOptions = [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::MYSQL_ATTR_INIT_COMMAND => 'SET NAMES utf8mb4', // Recommended for proper UTF-8 handling
+        ];
+
+        // Merge default options with user-provided ones
+        $pdoOptions = $options + $defaultOptions;
+
+        return new PDO($dsn, $username, $password, $pdoOptions);
     }
 }

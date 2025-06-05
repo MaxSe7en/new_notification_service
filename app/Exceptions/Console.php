@@ -20,8 +20,22 @@ class Console{
         self::logger( date("Y-m-d") . ' => [INFO] '. $message);
     }
 
-    public static function error($message) : void {
-        self::logger(date("Y-m-d") . ' => [ERROR] '. $message);
+    public static function error($message): void 
+    {
+        $logMessage = date("Y-m-d H:i:s") . ' [ERROR] ' . $message . PHP_EOL;
+        self::logger($logMessage);
+        
+        // Also log to syslog for system monitoring
+        // syslog(LOG_ERR, $message);
+        
+        // Consider adding error notification (Slack, Email, etc.)
+        self::notifyAdmin($message);
+    }
+    
+    private static function notifyAdmin(string $message): void
+    {
+        // Implement your notification logic here
+        // Could be Slack webhook, Email, etc.
     }
 
     public static function warn($message) : void {
