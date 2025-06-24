@@ -42,7 +42,7 @@ class NotificationServer
 
     private function initServer(): void
     {
-        $this->server = new Server("0.0.0.0", 9502); //new Server("0.0.0.0", 9502, SWOOLE_PROCESS, SWOOLE_SOCK_TCP | SWOOLE_SSL);
+        $this->server = new Server("0.0.0.0", 9502, SWOOLE_PROCESS, SWOOLE_SOCK_TCP | SWOOLE_SSL);
 
         $this->server->set([
             'ssl_cert_file' => '/etc/letsencrypt/live/winsstarts.com/fullchain.pem',
