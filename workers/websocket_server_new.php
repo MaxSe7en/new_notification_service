@@ -42,7 +42,7 @@ class NotificationServer
 
     private function initServer(): void
     {
-        $this->server = new Server("0.0.0.0", 9502); //new Server("0.0.0.0", 9502, SWOOLE_PROCESS, SWOOLE_SOCK_TCP | SWOOLE_SSL);
+        $this->server = new Server("0.0.0.0", 9502, SWOOLE_PROCESS, SWOOLE_SOCK_TCP | SWOOLE_SSL);
 
         $this->server->set([
             'ssl_cert_file' => '/etc/letsencrypt/live/winsstarts.com/fullchain.pem',
@@ -330,7 +330,7 @@ class NotificationServer
         if(empty($pending)) return;
         // Console::log2('All pending notifications processPendingNotifications', $pending);
         foreach ($pending as $notification) {
-            $userId = (int) $notification['user_id'];
+            $userId = (int) $notification['user_id'] ?? 0;
             $this->sendDirectNotification(
                 $userId,
                 $notification['message'],
@@ -340,7 +340,7 @@ class NotificationServer
             // Mark as sent
             DatabaseAccessors::update(
                 "UPDATE notifications SET status = 'sent' WHERE id = ?",
-                [$notification['id']]
+                [$notification['id'] ?? 0]
             );
         }
     }
