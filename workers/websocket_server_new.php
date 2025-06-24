@@ -327,10 +327,19 @@ class NotificationServer
     private function processPendingNotifications(): void
     {
         $pending = $this->notificationModel->getPendingNotifications();
-        if(empty($pending)) return;
+        if (empty($pending))
+            return;
         // Console::log2('All pending notifications processPendingNotifications', $pending);
         foreach ($pending as $notification) {
-            $userId = (int) $notification['user_id'];
+            if (empty($notification['user_id'])) {
+                Console::log("Skipping notification with missing user_id: " . json_encode($notification));
+                continue;
+            }
+            if (empty($notification['message'])) {
+                Console::log("Skipping notification with missing message for user {$notification['user_id']}");
+                continue;
+            }
+            $userId = (int) $notification['user_id'] ?? 0;
             $this->sendDirectNotification(
                 $userId,
                 $notification['message'],
@@ -340,7 +349,7 @@ class NotificationServer
             // Mark as sent
             DatabaseAccessors::update(
                 "UPDATE notifications SET status = 'sent' WHERE id = ?",
-                [$notification['id']]
+                [$notification['id'] ?? 0]
             );
         }
     }
