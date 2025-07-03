@@ -1,6 +1,7 @@
 <?php
 namespace App\Config;
 
+use App\Exceptions\Console;
 use PDO;
 use PDOException;
 use SplQueue;
@@ -68,7 +69,7 @@ class DatabasePool
     {
         try {
             $dsn = "mysql:host={$config['host']};dbname={$config['database']};charset=utf8mb4";
-
+                Console::log2('============================> ', $config);
             $defaultOptions = [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,

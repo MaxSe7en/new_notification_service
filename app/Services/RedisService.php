@@ -17,7 +17,7 @@ class RedisService
         $this->config = [
             'cluster' => getenv('REDIS_CLUSTER') ?: false,
             'scheme' => getenv('REDIS_SCHEME') ?: 'tcp',
-            'host' => getenv('REDIS_HOST') ?: '127.0.0.1',
+            'host' => getenv('REDIS_HOST') ?: '192.168.1.51',
             'port' => getenv('REDIS_PORT') ?: 6379,
             'password' => getenv('REDIS_PASSWORD') ?: null,
             'read_write_timeout' => 2, // seconds

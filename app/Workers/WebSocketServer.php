@@ -16,17 +16,20 @@ class WebSocketServer
     private RedisService $redisService;
     private NotificationModel $notificationModel;
     private array $config;
+    private array $config2;
     private array $heartbeatTimers = [];
     
     public function __construct(array $config = [])
     {
-        $this->config = array_merge([
+        $this->config2 = [
             'host' => '0.0.0.0',
-            'port' => 9502,
+            'port' => 9502
+        ];
+        $this->config = array_merge([
             'worker_num' => swoole_cpu_num() * 2,
             'task_worker_num' => swoole_cpu_num() * 4,
             'enable_coroutine' => true,
-            'max_connection' => 10000,
+            'max_connection' => 1024,
             'dispatch_mode' => 2, // IP dispatch for better consistency
             'heartbeat_idle_time' => 120, // seconds
             'heartbeat_check_interval' => 60, // seconds
@@ -40,14 +43,17 @@ class WebSocketServer
 
     public function start(): void
     {
-        $this->server = new Server(
-            $this->config['host'],
-            $this->config['port'],
-            // SWOOLE_PROCESS,
-            // SWOOLE_SOCK_TCP | SWOOLE_SSL
-        );
+        // Create server with host/port in constructor
+        $host = $this->config['host'] ?? '0.0.0.0';
+        $port = $this->config['port'] ?? 9502;
+        
+        $this->server = new Server($host, $port);//, SWOOLE_PROCESS, SWOOLE_SOCK_TCP | SWOOLE_SSL);
 
-        $this->server->set($this->config);
+        // Remove host/port from config before passing to set()
+        $serverConfig = $this->config;
+        unset($serverConfig['host'], $serverConfig['port']);
+        
+        $this->server->set($serverConfig);
         $this->registerEventHandlers();
         $this->server->start();
     }
@@ -65,11 +71,11 @@ class WebSocketServer
 
     public function onStart(Server $server): void
     {
-        Console::info("WebSocket server started on wss://{$this->config['host']}:{$this->config['port']}");
+        Console::info("WebSocket server started on wss://{$this->config2['host']}:{$this->config2['port']}");
         
         // Register this server instance
         $this->redisService->executeWithRetry(function($client) {
-            $client->hset('ws_servers', gethostname() . ':' . $this->config['port'], time());
+            $client->hset('ws_servers', gethostname() . ':' . $this->config2['port'], time());
         });
         
         // Setup cleanup timer
