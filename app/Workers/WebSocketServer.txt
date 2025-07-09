@@ -4,7 +4,7 @@ namespace App\Workers;
 
 use Swoole\WebSocket\Server;
 use Swoole\Timer;
-use App\Services\RedisService2;
+use App\Services\RedisService;
 use App\Config\DatabaseAccessors;
 use App\Models\NotificationModel;
 use App\Exceptions\Console;
@@ -13,7 +13,7 @@ use Predis\Client;
 class WebSocketServer
 {
     private Server $server;
-    private RedisService2 $redisService;
+    private RedisService $redisService;
     private NotificationModel $notificationModel;
     private array $config;
     private array $config2;
@@ -21,7 +21,6 @@ class WebSocketServer
 
     public function __construct(array $config = [])
     {
-        $this->serverId = gethostname() . ':' . ($config['port'] ?? 9502);
         $this->config2 = [
             'host' => '0.0.0.0',
             'port' => 9502
@@ -36,16 +35,12 @@ class WebSocketServer
             'heartbeat_check_interval' => 60, // seconds
             // 'ssl_cert_file' => '/etc/ssl/certs/ssl-cert-snakeoil.pem',
             // 'ssl_key_file' => '/etc/ssl/private/ssl-cert-snakeoil.key',
-            'buffer_output_size' => 32 * 1024 * 1024, // 32MB
-            'socket_buffer_size' => 128 * 1024 * 1024, // 128MB
-            'reload_async' => true,
-            'max_wait_time' => 60,
         ], $config);
 
-        $this->redisService = new RedisService2();
+        $this->redisService = new RedisService();
         $this->notificationModel = new NotificationModel();
         $this->initializeRedisStructures();
-        // $this->verifyKeyTypes();
+        $this->verifyKeyTypes();
     }
 
     public function start(): void
@@ -54,7 +49,7 @@ class WebSocketServer
         $host = $this->config['host'] ?? '0.0.0.0';
         $port = $this->config['port'] ?? 9502;
         // Verify Redis key types before starting
-        // $this->verifyKeyTypes();
+        $this->verifyKeyTypes();
         $this->server = new Server($host, $port);//, SWOOLE_PROCESS, SWOOLE_SOCK_TCP | SWOOLE_SSL);
 
         // Remove host/port from config before passing to set()
@@ -81,26 +76,26 @@ class WebSocketServer
     {
         Console::info("WebSocket server started on wss://{$this->config2['host']}:{$this->config2['port']}");
 
-        // Register this server instance with extended TTL
-        $this->redisService->registerServer($this->serverId);
-
-        // Setup cleanup timers
-        Timer::tick(60000, [$this, 'cleanupStaleServers']);
-        Timer::tick(30000, function () {
-            $this->redisService->registerServer($this->serverId);
+        // Register this server instance
+        $this->redisService->executeWithRetry(function ($client) {
+            $client->hset('ws_servers', gethostname() . ':' . $this->config2['port'], time());
         });
+
+        // Setup cleanup timer
+        Timer::tick(60000, [$this, 'cleanupStaleServers']);
     }
 
     public function onWorkerStart(Server $server, int $workerId): void
     {
+        $this->verifyKeyTypes();
         if ($workerId < $this->config['worker_num']) {
-            // Health checks with less frequency
+            // Start health checks in worker processes
             Timer::tick($this->config['heartbeat_check_interval'] * 1000, function () {
                 $this->checkConnectionHealth();
             });
 
-            // Process queued notifications
-            Timer::tick(10000, function () use ($server) { // 10 seconds instead of 5
+            // Start processing queued notifications
+            Timer::tick(5000, function () use ($server) {
                 $server->task(['type' => 'process_queued_notifications']);
             });
         }
@@ -112,15 +107,15 @@ class WebSocketServer
             $userId = $this->validateAndGetUserId($request);
             $fd = $request->fd;
 
-            // Track connection with extended TTL (2x heartbeat idle time)
-            $this->redisService->trackConnection(
-                $userId,
-                $fd,
-                $this->config['heartbeat_idle_time'] * 2
-            );
+            // Store connection in Redis
+            $this->redisService->executeWithRetry(function ($client) use ($userId, $fd) {
+                $client->hset('ws_connections', $userId, $fd);
+                $client->hset('ws_connection_map', $fd, $userId);
+                $client->setex("ws_connection:{$fd}", $this->config['heartbeat_idle_time'], $userId);
+            });
 
-            // Less aggressive heartbeat (every 45 seconds)
-            $this->heartbeatTimers[$fd] = Timer::tick(45000, function () use ($server, $fd) {
+            // Start heartbeat timer for this connection
+            $this->heartbeatTimers[$fd] = Timer::tick(30000, function () use ($server, $fd) {
                 if ($server->exists($fd)) {
                     $server->push($fd, json_encode(['type' => 'ping']));
                 } else {
@@ -129,6 +124,7 @@ class WebSocketServer
                 }
             });
 
+            // Send initial data
             $this->sendInitialData($userId, $fd);
 
         } catch (\Exception $e) {
@@ -144,26 +140,32 @@ class WebSocketServer
             if (!$data) {
                 throw new \InvalidArgumentException("Invalid JSON format");
             }
-
-            // Get user ID and validate connection
-            $userId = $this->redisService->getConnectionUserId($frame->fd);
-            if (!$userId || !$this->server->exists($frame->fd)) {
-                Console::warn("Message from invalid connection (fd: {$frame->fd})");
+            $userId = $this->getUserIdFromFrame($frame->fd);
+            if (!$userId) {
                 $server->close($frame->fd);
                 return;
             }
 
-            // Rest of your message handling logic...
+            if (!isset($data['action']) || (isset($data['message']) && trim($data['message']) === '')) {
+                $server->push($frame->fd, json_encode([
+                    'type' => 'error',
+                    'message' => 'Empty messages are not allowed'
+                ]));
+                return;
+            }
+            // Update connection activity
+            $this->redisService->executeWithRetry(function ($client) use ($frame) {
+                $client->expire("ws_connection:{$frame->fd}", $this->config['heartbeat_idle_time']);
+            });
+
             $this->handleMessage($data, $frame->fd, $userId);
 
         } catch (\Exception $e) {
             Console::error("Message handling error: " . $e->getMessage());
-            if (isset($frame->fd) && $server->exists($frame->fd)) {
-                $server->push($frame->fd, json_encode([
-                    'type' => 'error',
-                    'message' => 'Internal server error'
-                ]));
-            }
+            $server->push($frame->fd, json_encode([
+                'type' => 'error',
+                'message' => 'Internal server error'
+            ]));
         }
     }
 
@@ -176,17 +178,14 @@ class WebSocketServer
                 unset($this->heartbeatTimers[$fd]);
             }
 
-            // Clean up Redis entries
+            // Remove from Redis
             $this->redisService->executeWithRetry(function ($client) use ($fd) {
-                $pipe = $client->pipeline();
-                $userId = $client->get(RedisService2::CONNECTION_PREFIX . $fd);
-
+                $userId = $client->hget('ws_connection_map', $fd);
                 if ($userId) {
-                    $pipe->hdel(RedisService2::USER_CONNECTION_MAP, $userId);
+                    $client->hdel('ws_connections', $userId);
                 }
-                $pipe->hdel(RedisService2::FD_USER_MAP, $fd);
-                $pipe->del(RedisService2::CONNECTION_PREFIX . $fd);
-                $pipe->execute();
+                $client->hdel('ws_connection_map', $fd);
+                $client->del("ws_connection:{$fd}");
             });
 
         } catch (\Exception $e) {
@@ -244,17 +243,12 @@ class WebSocketServer
         return $userId;
     }
 
-    public function onShutdown(): void
+    private function getUserIdFromFrame(int $fd): ?int
     {
-        // Clean up all server registrations
-        $this->redisService->executeWithRetry(function ($client) {
-            $client->hdel(RedisService2::SERVER_REGISTRY, $this->serverId);
+        return $this->redisService->executeWithRetry2(function ($client) use ($fd) {
+            $userId = $client->hget('ws_connection_map', $fd);
+            return is_numeric($userId) ? (int) $userId : null; // Ensure userId is an int or null
         });
-
-        // Clear all timers
-        foreach ($this->heartbeatTimers as $timerId) {
-            Timer::clear($timerId);
-        }
     }
 
     private function sendInitialData(int $userId, int $fd): void
@@ -350,33 +344,41 @@ class WebSocketServer
         });
     }
 
-    public function sendDirectNotification(int $userId, string $message, string $event): bool
+    private function sendDirectNotification(int $userId, string $message, string $event): bool
     {
         return $this->redisService->executeWithRetry2(function ($client) use ($userId, $message, $event) {
-            // Get the file descriptor from Redis
-            $fd = $client->hget(RedisService2::USER_CONNECTION_MAP, (string) $userId);
+            $fd = $client->hget('ws_connections', $userId);
 
-            // Validate the fd before attempting to push
-            if (!$fd || !$this->isValidConnection($fd)) {
-                // Queue the notification if the user isn't connected
-                if (!empty($message)) {
-                    $client->rpush(RedisService2::QUEUE_PREFIX . 'notifications', json_encode([
+            // Ensure $fd is a valid string/int, not an object (e.g., Predis\Response\Status)
+            if (!is_string($fd) && !is_numeric($fd)) {
+                // Clean up if needed
+                $client->hdel('ws_connections', $userId);
+                if (is_string($fd) || is_numeric($fd)) {
+                    $client->hdel('ws_connection_map', $fd);
+                }
+                // Optionally log the error
+                // Console::warn("sendDirectNotification: Invalid fd type for user {$userId}");
+                return false;
+            }
+
+            if ($fd === null || !$client->exists("ws_connection:{$fd}")) {
+                if ($message !== '') {
+                    $client->rpush('notification_queue', json_encode([
                         'user_id' => $userId,
                         'message' => $message,
                         'event' => $event,
                         'timestamp' => time()
                     ]));
                 }
+
+                if ($fd !== null) {
+                    $client->hdel('ws_connections', $userId);
+                    $client->hdel('ws_connection_map', $fd);
+                }
                 return false;
             }
 
-            // Double-check connection exists before pushing
-            if (!$this->server->exists((int) $fd)) {
-                $this->cleanupStaleConnection($userId, $fd);
-                return false;
-            }
-
-            // Prepare the payload
+            // Send via WebSocket server API
             $payload = json_encode([
                 'type' => 'notification',
                 'event' => $event,
@@ -384,36 +386,8 @@ class WebSocketServer
                 'timestamp' => time()
             ]);
 
-            // Safely push the notification
-            try {
-                return $this->server->push((int) $fd, $payload);
-            } catch (\Exception $e) {
-                Console::error("Push failed for fd {$fd}: " . $e->getMessage());
-                $this->cleanupStaleConnection($userId, $fd);
-                return false;
-            }
-        });
-    }
-
-    private function isValidConnection($fd): bool
-    {
-        if (!$fd || $fd === 0) {
-            return false;
-        }
-
-        return $this->redisService->executeWithRetry2(function ($client) use ($fd) {
-            return (bool) $client->exists(RedisService2::CONNECTION_PREFIX . $fd);
-        });
-    }
-
-    private function cleanupStaleConnection($userId, $fd): void
-    {
-        $this->redisService->executeWithRetry(function ($client) use ($userId, $fd) {
-            $pipe = $client->pipeline();
-            $pipe->hdel(RedisService2::USER_CONNECTION_MAP, (string) $userId);
-            $pipe->hdel(RedisService2::FD_USER_MAP, (string) $fd);
-            $pipe->del(RedisService2::CONNECTION_PREFIX . $fd);
-            $pipe->execute();
+            $this->server->push((int) $fd, $payload); // Cast $fd to int for Swoole push
+            return true;
         });
     }
 
@@ -443,41 +417,39 @@ class WebSocketServer
     private function checkConnectionHealth(): void
     {
         $this->redisService->executeWithRetry(function ($client) {
-            // Use safeHGetAll as recommended - this handles type checking and empty cases
-            $fds = $this->redisService->safeHGetAll(RedisService2::FD_USER_MAP);
+            $now = time();
+            $staleTime = $now - $this->config['heartbeat_idle_time'];
+
+            // Safely get all connection mappings
+            // Check type before hgetall
+            $type = $client->type('ws_connection_map');
+            // Console::log2('checkConnectionHealth - type of ws_connection_map: ', $type);
+            if ($type !== 'hash') {
+                $ttype = json_encode($type);
+                // Console::warn("Redis key 'ws_connection_map' is not a hash (type: {$ttype}). Re-initializing.");
+                $client->del('ws_connection_map');
+                $client->hset('ws_connection_map', 'init', time());
+                $client->hdel('ws_connection_map', 'init');
+                $fds = [];
+            } else {
+                $fds = $client->hgetall('ws_connection_map');
+                if (!is_array($fds)) {
+                    $fds = [];
+                }
+            }
 
             foreach ($fds as $fd => $userId) {
                 try {
-                    // Skip invalid file descriptors immediately
-                    if (empty($fd) || $fd === 0 || $fd === '0') {
-                        $this->cleanupStaleConnection($userId, $fd);
-                        continue;
-                    }
-
-                    $connectionKey = RedisService2::CONNECTION_PREFIX . $fd;
-
-                    // Double verification:
-                    // 1. Check Redis connection tracking
-                    // 2. Verify Swoole knows about the connection
-                    $redisConnectionExists = $this->redisService->executeWithRetry2(
-                        fn($c) => (bool) $c->exists($connectionKey)
-                    );
-
-                    $swooleConnectionExists = $this->server->exists((int) $fd);
-
-                    if (!$redisConnectionExists || !$swooleConnectionExists) {
-                        Console::info("Cleaning up stale connection for user {$userId} (fd: {$fd})");
-                        $this->cleanupStaleConnection($userId, $fd);
-
-                        // If Redis thinks it exists but Swoole doesn't, log the discrepancy
-                        if ($redisConnectionExists && !$swooleConnectionExists) {
-                            Console::warn("Connection mismatch - Redis had fd {$fd} but Swoole didn't");
+                    if (!$client->exists("ws_connection:{$fd}")) {
+                        Console::info("Cleaning up stale connection for user {$userId} (fd: {$fd}). Redis key ws_connection:{$fd} does not exist.");
+                        if ($this->server->exists((int) $fd)) {
+                            $this->server->close((int) $fd);
                         }
+                        $client->hdel('ws_connections', $userId);
+                        $client->hdel('ws_connection_map', $fd);
                     }
                 } catch (\Exception $e) {
-                    Console::error("Health check failed for fd {$fd}: " . $e->getMessage());
-                    // If we can't verify, play it safe and clean up
-                    $this->cleanupStaleConnection($userId, $fd);
+                    Console::error("Error cleaning up connection {$fd}: " . $e->getMessage());
                 }
             }
         });
@@ -487,18 +459,14 @@ class WebSocketServer
     private function initializeRedisStructures(): void
     {
         $this->redisService->executeWithRetry(function ($client) {
-            // Initialize USER_CONNECTION_MAP
-            if ($client->type(RedisService2::USER_CONNECTION_MAP) !== 'hash') {
-                $client->del(RedisService2::USER_CONNECTION_MAP);
-                $client->hset(RedisService2::USER_CONNECTION_MAP, '__initialized__', time());
-                $client->hdel(RedisService2::USER_CONNECTION_MAP, '__initialized__');
+            // Ensure these keys exist as hashes
+            if (!$client->exists('ws_connections')) {
+                $client->hset('ws_connections', 'init', time()); // Add dummy entry
+                $client->hdel('ws_connections', 'init'); // Remove dummy entry
             }
-
-            // Initialize FD_USER_MAP
-            if ($client->type(RedisService2::FD_USER_MAP) !== 'hash') {
-                $client->del(RedisService2::FD_USER_MAP);
-                $client->hset(RedisService2::FD_USER_MAP, '__initialized__', time());
-                $client->hdel(RedisService2::FD_USER_MAP, '__initialized__');
+            if (!$client->exists('ws_connection_map')) {
+                $client->hset('ws_connection_map', 'init', time()); // Add dummy entry
+                $client->hdel('ws_connection_map', 'init'); // Remove dummy entry
             }
         });
     }

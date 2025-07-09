@@ -1,45 +1,49 @@
 <?php
-// File: /app/Services/RedisService.php
 namespace App\Services;
 
 use Predis\Client;
 use App\Exceptions\Console;
 
-class RedisService
+class RedisService2
 {
     private Client $client;
     private array $config;
     private bool $isCluster;
-    private const QUEUE_PREFIX = 'notification_queue:';
+
+    // Define all Redis key patterns as constants
+    public const KEY_PREFIX = 'ws:';
+    public const CONNECTION_PREFIX = self::KEY_PREFIX . 'connection:';
+    public const QUEUE_PREFIX = self::KEY_PREFIX . 'notification_queue:';
+    public const SERVER_REGISTRY = self::KEY_PREFIX . 'servers';
+    public const USER_CONNECTION_MAP = self::KEY_PREFIX . 'user_connections';
+    public const FD_USER_MAP = self::KEY_PREFIX . 'fd_user_map';
 
     public function __construct()
     {
         $this->config = [
-            'cluster' => getenv('REDIS_CLUSTER') ?: false,
+            'cluster' => filter_var(getenv('REDIS_CLUSTER') ?: false, FILTER_VALIDATE_BOOLEAN),
             'scheme' => getenv('REDIS_SCHEME') ?: 'tcp',
-            'host' => getenv('REDIS_HOST') ?: '127.0.0.1',//'192.168.1.51',
-            'port' => getenv('REDIS_PORT') ?: 6379,
+            'host' => getenv('REDIS_HOST') ?: '127.0.0.1',
+            'port' => (int) (getenv('REDIS_PORT') ?: 6379),
             'password' => getenv('REDIS_PASSWORD') ?: null,
-            'read_write_timeout' => 0, // seconds
-            'failover' => 'distribute', // or 'error'
+            'read_write_timeout' => 0,
+            'failover' => 'distribute',
         ];
 
-        $this->isCluster = filter_var($this->config['cluster'], FILTER_VALIDATE_BOOLEAN);
         $this->initializeClient();
     }
 
     private function initializeClient(): void
     {
         try {
-            if ($this->isCluster) {
+            if ($this->config['cluster']) {
                 $this->client = new Client([
                     'cluster' => 'redis',
                     'parameters' => [
                         'password' => $this->config['password'],
                     ],
                     'nodes' => [
-                        'tcp://' . $this->config['host'] . ':' . $this->config['port'],
-                        // Add more nodes if available
+                        $this->config['scheme'] . '://' . $this->config['host'] . ':' . $this->config['port'],
                     ],
                 ]);
             } else {
@@ -52,8 +56,8 @@ class RedisService
                 ]);
             }
 
-            // Test connection
-            $this->client->ping();
+            // Test connection with actual command that verifies connectivity
+            $this->client->time();
         } catch (\Exception $e) {
             Console::error("Redis connection failed: " . $e->getMessage());
             throw $e;
@@ -63,7 +67,8 @@ class RedisService
     public function getClient(): Client
     {
         try {
-            $this->client->ping();
+            // Use a simple command that doesn't modify data to test connection
+            $this->client->time();
         } catch (\Exception $e) {
             Console::warn("Redis connection lost, reconnecting... " . $e->getMessage());
             $this->initializeClient();
@@ -72,22 +77,45 @@ class RedisService
         return $this->client;
     }
 
-    public function safeHGetAll($key): array
+    public function safeHGetAll(string $key): array
     {
         return $this->executeWithRetry(function ($client) use ($key) {
+            // First check if key exists
+            if (!$client->exists($key)) {
+                return [];
+            }
+
+            // Check the type
             $type = $client->type($key);
             if ($type !== 'hash') {
                 $client->del($key);
-                $client->hset($key, 'init', time());
-                $client->hdel($key, 'init');
                 return [];
             }
-            $data = $client->hgetall($key);
-            return is_array($data) ? $data : [];
+
+            // Safely get hash data with error handling
+            try {
+                $data = $client->hgetall($key);
+                if (!is_array($data)) {
+                    return [];
+                }
+                return $data;
+            } catch (\Exception $e) {
+                Console::warn("HGETALL failed for key {$key}: " . $e->getMessage());
+                return [];
+            }
         });
     }
 
-    // In RedisService.php
+    public function safeHashGet(string $hashKey, string $field): ?string
+    {
+        return $this->executeWithRetry(function ($client) use ($hashKey, $field) {
+            if ($client->type($hashKey) !== 'hash') {
+                return null;
+            }
+            $value = $client->hget($hashKey, $field);
+            return is_string($value) ? $value : null;
+        });
+    }
 
     public function executeWithRetry(callable $operation, int $maxRetries = 3)
     {
@@ -98,9 +126,9 @@ class RedisService
             try {
                 $result = $operation($this->getClient());
 
-                // Handle empty responses
+                // Handle empty responses consistently
                 if ($result === null || $result === false) {
-                    return []; // Return empty array for hash commands
+                    return [];
                 }
 
                 return $result;
@@ -147,50 +175,30 @@ class RedisService
         );
     }
 
-    // In RedisService.php
-
-    public function getStats(): array
+    // Add specific methods for our key patterns
+    public function registerServer(string $serverId): void
     {
-        $client = $this->getClient();
-
-        return [
-            'memory' => $client->info('memory'),
-            'clients' => $client->info('clients'),
-            'stats' => $client->info('stats'),
-            'slowlog' => $client->slowlog('get', 10),
-        ];
+        $this->executeWithRetry(function ($client) use ($serverId) {
+            $client->hset(self::SERVER_REGISTRY, $serverId, time());
+        });
     }
 
-    public function getQueueStats(): array
+    public function trackConnection(int $userId, int $fd, int $ttl): void
     {
-        return $this->executeWithRetry(function ($client) {
-            $iterator = null;
-            $stats = [];
-            $pattern = self::QUEUE_PREFIX . '*';
+        $this->executeWithRetry(function ($client) use ($userId, $fd, $ttl) {
+            $pipe = $client->pipeline();
+            $pipe->hset(self::USER_CONNECTION_MAP, (string) $userId, $fd);
+            $pipe->hset(self::FD_USER_MAP, (string) $fd, $userId);
+            $pipe->setex(self::CONNECTION_PREFIX . $fd, $ttl, $userId);
+            $pipe->execute();
+        });
+    }
 
-            do {
-                $result = $client->scan($iterator, ['match' => $pattern, 'count' => 100]);
-                $iterator = $result[0];
-                $keys = $result[1];
-
-                if (!empty($keys)) {
-                    $pipe = $client->pipeline();
-                    foreach ($keys as $key) {
-                        $pipe->llen($key);
-                        $pipe->ttl($key);
-                    }
-                    $results = $pipe->execute();
-
-                    for ($i = 0; $i < count($keys); $i++) {
-                        $stats[$keys[$i]] = [
-                            'length' => $results[$i * 2],
-                            'ttl' => $results[$i * 2 + 1]
-                        ];
-                    }
-                }
-            } while ($iterator > 0);
-
-            return $stats;
+    public function getConnectionUserId(int $fd): ?int
+    {
+        return $this->executeWithRetry(function ($client) use ($fd) {
+            $userId = $client->get(self::CONNECTION_PREFIX . $fd);
+            return $userId !== null ? (int) $userId : null;
         });
     }
 }
