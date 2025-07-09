@@ -215,7 +215,7 @@ class RedisService2
 
                 // Handle null case first
                 if ($result === null) {
-                    return null;
+                    return 0;
                 }
 
                 // Convert to string if object has __toString()
@@ -227,7 +227,7 @@ class RedisService2
                 if (is_string($result)) {
                     // Empty string should be treated as null
                     if (trim($result) === '') {
-                        return null;
+                        return 0;
                     }
 
                     // Return numeric strings as int
@@ -237,7 +237,7 @@ class RedisService2
 
                     // Non-numeric string - log warning
                     Console::warn("Non-numeric user ID in Redis for fd {$fd}: {$result}");
-                    return null;
+                    return 0;
                 }
 
                 // Handle integer case directly
@@ -258,11 +258,11 @@ class RedisService2
 
                 // Final fallback for any other type
                 Console::warn("Unhandled response type for fd {$fd}: " . gettype($result));
-                return null;
+                return 0;
 
             } catch (\Exception $e) {
                 Console::error("Failed to get user ID for fd {$fd}: " . $e->getMessage());
-                return null;
+                return 0;
             }
         });
     }

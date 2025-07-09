@@ -148,7 +148,7 @@ class WebSocketServer
             // Get user ID and validate connection
             $userId = $this->redisService->getConnectionUserId($frame->fd);
             if (!$userId || !$this->server->exists($frame->fd)) {
-                Console::warn("Message from invalid connection (fd: {$frame->fd})");
+                // Console::warn("Message from invalid connection (fd: {$frame->fd})");
                 $server->close($frame->fd);
                 return;
             }
