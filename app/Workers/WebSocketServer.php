@@ -36,6 +36,12 @@ class WebSocketServer
             'heartbeat_check_interval' => 60, // seconds
             // 'ssl_cert_file' => '/etc/ssl/certs/ssl-cert-snakeoil.pem',
             // 'ssl_key_file' => '/etc/ssl/private/ssl-cert-snakeoil.key',
+            'ssl_cert_file' => '/etc/letsencrypt/live/winsstarts.com/fullchain.pem',
+            'ssl_key_file' => '/etc/letsencrypt/live/winsstarts.com/privkey.pem',
+            'ssl_protocols' => SWOOLE_SSL_TLSv1_2 | SWOOLE_SSL_TLSv1_3, // Enforce modern protocols
+            'ssl_ciphers' => 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384', // Strong ciphers
+            'ssl_prefer_server_ciphers' => true,
+            'open_http2_protocol' => true,
             'buffer_output_size' => 32 * 1024 * 1024, // 32MB
             'socket_buffer_size' => 128 * 1024 * 1024, // 128MB
             'reload_async' => true,
@@ -55,7 +61,7 @@ class WebSocketServer
         $port = $this->config['port'] ?? 9502;
         // Verify Redis key types before starting
         // $this->verifyKeyTypes();
-        $this->server = new Server($host, $port);//, SWOOLE_PROCESS, SWOOLE_SOCK_TCP | SWOOLE_SSL);
+        $this->server = new Server($host, $port, SWOOLE_PROCESS, SWOOLE_SOCK_TCP | SWOOLE_SSL);
 
         // Remove host/port from config before passing to set()
         $serverConfig = $this->config;
