@@ -11,12 +11,14 @@ class DatabaseAccessors
     private static ?DatabasePool $pool = null;
     private static array $readConfig = [
         'host' => '192.168.1.51',//localhost // Set your read replica host
+        // 'host' => 'localhost',//'192.168.1.51',//localhost // Set your read replica host
         'database' => 'lottery_test',
         'username' => 'enzerhub',
         'password' => 'enzerhub'
     ];
 
     private static array $writeConfig = [
+        // 'host' => 'localhost',//'192.168.1.51', // Primary write host
         'host' => '192.168.1.51', // Primary write host
         'database' => 'lottery_test',
         'username' => 'enzerhub',

@@ -17,10 +17,10 @@ class RedisService
         $this->config = [
             'cluster' => getenv('REDIS_CLUSTER') ?: false,
             'scheme' => getenv('REDIS_SCHEME') ?: 'tcp',
-            'host' => getenv('REDIS_HOST') ?: '192.168.1.51',
+            'host' => getenv('REDIS_HOST') ?: '127.0.0.1',//'192.168.1.51',
             'port' => getenv('REDIS_PORT') ?: 6379,
             'password' => getenv('REDIS_PASSWORD') ?: null,
-            'read_write_timeout' => 2, // seconds
+            'read_write_timeout' => 0, // seconds
             'failover' => 'distribute', // or 'error'
         ];
 
@@ -62,11 +62,28 @@ class RedisService
 
     public function getClient(): Client
     {
-        if (!$this->client->ping()) {
-            Console::warn("Redis connection lost, reconnecting...");
+        try {
+            $this->client->ping();
+        } catch (\Exception $e) {
+            Console::warn("Redis connection lost, reconnecting... " . $e->getMessage());
             $this->initializeClient();
         }
+
         return $this->client;
+    }
+
+    public function safeHGetAll($key): array {
+        return $this->executeWithRetry(function ($client) use ($key) {
+            $type = $client->type($key);
+            if ($type !== 'hash') {
+                $client->del($key);
+                $client->hset($key, 'init', time());
+                $client->hdel($key, 'init');
+                return [];
+            }
+            $data = $client->hgetall($key);
+            return is_array($data) ? $data : [];
+        });
     }
 
     // In RedisService.php
@@ -78,20 +95,30 @@ class RedisService
 
         while ($retries < $maxRetries) {
             try {
-                return $operation($this->getClient());
+                $result = $operation($this->getClient());
+
+                // Handle empty responses
+                if ($result === null || $result === false) {
+                    return []; // Return empty array for hash commands
+                }
+
+                return $result;
+
             } catch (\Exception $e) {
                 $lastException = $e;
                 $retries++;
-                Console::warn("Redis operation failed (attempt $retries/$maxRetries): " . $e->getMessage());
-
+                Console::warn("Redis operation failed (attempt {$retries}): " . $e->getMessage());
                 if ($retries < $maxRetries) {
                     usleep(100000 * $retries); // Exponential backoff
-                    $this->initializeClient(); // Reinitialize client
+                    $this->initializeClient(); // Reconnect
                 }
             }
         }
 
-        throw $lastException;
+        throw new \RuntimeException(
+            "Redis operation failed after {$maxRetries} attempts. " .
+            "Last error: " . $lastException->getMessage()
+        );
     }
 
     // In RedisService.php

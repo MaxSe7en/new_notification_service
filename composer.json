@@ -4,7 +4,10 @@
     "require": {
         "swoole/ide-helper": "^6.0",
         "monolog/monolog": "^3.9",
-        "predis/predis": "^2.3"
+        "predis/predis": "^2.3",
+        "cboden/ratchet": "^0.4.4",
+        "ratchet/pawl": "^0.4.3",
+        "react/socket": "^1.16"
     },
     "autoload": {
         "psr-4": {
