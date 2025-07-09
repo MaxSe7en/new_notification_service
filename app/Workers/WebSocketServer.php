@@ -353,13 +353,13 @@ class WebSocketServer
     public function sendDirectNotification(int $userId, string $message, string $event): bool
     {
         return $this->redisService->executeWithRetry2(function ($client) use ($userId, $message, $event) {
-            // Get the file descriptor from Redis
+            // Get the file descriptor - ensure it's a single value
             $fd = $client->hget(RedisService2::USER_CONNECTION_MAP, (string) $userId);
 
-            // Validate the fd before attempting to push
-            if (!$fd || !$this->isValidConnection($fd)) {
-                // Queue the notification if the user isn't connected
+            // Validate the connection thoroughly
+            if (!$this->isValidConnection($fd)) {
                 if (!empty($message)) {
+                    // Queue notification if user disconnected
                     $client->rpush(RedisService2::QUEUE_PREFIX . 'notifications', json_encode([
                         'user_id' => $userId,
                         'message' => $message,
@@ -370,23 +370,18 @@ class WebSocketServer
                 return false;
             }
 
-            // Double-check connection exists before pushing
-            if (!$this->server->exists((int) $fd)) {
-                $this->cleanupStaleConnection($userId, $fd);
-                return false;
-            }
+            // At this point we're guaranteed $fd is a valid integer
+            $fd = (int) $fd;
 
-            // Prepare the payload
-            $payload = json_encode([
-                'type' => 'notification',
-                'event' => $event,
-                'message' => $message,
-                'timestamp' => time()
-            ]);
-
-            // Safely push the notification
             try {
-                return $this->server->push((int) $fd, $payload);
+                $payload = json_encode([
+                    'type' => 'notification',
+                    'event' => $event,
+                    'message' => $message,
+                    'timestamp' => time()
+                ]);
+
+                return $this->server->push($fd, $payload);
             } catch (\Exception $e) {
                 Console::error("Push failed for fd {$fd}: " . $e->getMessage());
                 $this->cleanupStaleConnection($userId, $fd);
@@ -397,22 +392,58 @@ class WebSocketServer
 
     private function isValidConnection($fd): bool
     {
-        if (!$fd || $fd === 0) {
+        // Comprehensive type and value validation
+        if (
+            empty($fd) ||
+            $fd === 0 ||
+            $fd === '0' ||
+            is_array($fd) ||
+            is_object($fd)
+        ) {
             return false;
         }
 
-        return $this->redisService->executeWithRetry2(function ($client) use ($fd) {
-            return (bool) $client->exists(RedisService2::CONNECTION_PREFIX . $fd);
-        });
+        // Convert to integer if it's a numeric string
+        $fd = is_numeric($fd) ? (int) $fd : $fd;
+
+        try {
+            return $this->redisService->executeWithRetry2(function ($client) use ($fd) {
+                // Verify the connection exists in both Redis and Swoole
+
+                // 1. Check Redis connection tracking
+                $redisKey = RedisService2::CONNECTION_PREFIX . $fd;
+                $redisExists = (bool) $client->exists($redisKey);
+
+                // 2. Check Swoole connection status
+                $swooleExists = false;
+                if (is_int($fd)) {
+                    $swooleExists = $this->server->exists($fd);
+                }
+
+                // Connection is only valid if both systems agree
+                return $redisExists && $swooleExists;
+            });
+        } catch (\Exception $e) {
+            Console::error("Connection validation failed for fd {$fd}: " . $e->getMessage());
+            return false;
+        }
     }
 
     private function cleanupStaleConnection($userId, $fd): void
     {
+        // Ensure we have valid inputs
+        if (empty($userId) || empty($fd)) {
+            return;
+        }
+
         $this->redisService->executeWithRetry(function ($client) use ($userId, $fd) {
             $pipe = $client->pipeline();
+
+            // Convert to strings to ensure consistent key types
             $pipe->hdel(RedisService2::USER_CONNECTION_MAP, (string) $userId);
             $pipe->hdel(RedisService2::FD_USER_MAP, (string) $fd);
             $pipe->del(RedisService2::CONNECTION_PREFIX . $fd);
+
             $pipe->execute();
         });
     }

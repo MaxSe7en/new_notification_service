@@ -185,11 +185,23 @@ class RedisService2
 
     public function trackConnection(int $userId, int $fd, int $ttl): void
     {
+        // Validate inputs first
+        if ($fd <= 0 || $userId <= 0) {
+            throw new \InvalidArgumentException("Invalid connection parameters");
+        }
+
         $this->executeWithRetry(function ($client) use ($userId, $fd, $ttl) {
             $pipe = $client->pipeline();
-            $pipe->hset(self::USER_CONNECTION_MAP, (string) $userId, $fd);
-            $pipe->hset(self::FD_USER_MAP, (string) $fd, $userId);
-            $pipe->setex(self::CONNECTION_PREFIX . $fd, $ttl, $userId);
+
+            // Use consistent typing for Redis keys
+            $pipe->hset(self::USER_CONNECTION_MAP, (string) $userId, (string) $fd);
+            $pipe->hset(self::FD_USER_MAP, (string) $fd, (string) $userId);
+            $pipe->setex(
+                self::CONNECTION_PREFIX . $fd,
+                $ttl,
+                (string) $userId
+            );
+
             $pipe->execute();
         });
     }
@@ -197,8 +209,61 @@ class RedisService2
     public function getConnectionUserId(int $fd): ?int
     {
         return $this->executeWithRetry(function ($client) use ($fd) {
-            $userId = $client->get(self::CONNECTION_PREFIX . $fd);
-            return $userId !== null ? (int) $userId : null;
+            try {
+                $key = self::CONNECTION_PREFIX . $fd;
+                $result = $client->get($key);
+
+                // Handle null case first
+                if ($result === null) {
+                    return null;
+                }
+
+                // Convert to string if object has __toString()
+                if (is_object($result) && method_exists($result, '__toString')) {
+                    $result = (string) $result;
+                }
+
+                // Handle string case
+                if (is_string($result)) {
+                    // Empty string should be treated as null
+                    if (trim($result) === '') {
+                        return null;
+                    }
+
+                    // Return numeric strings as int
+                    if (is_numeric($result)) {
+                        return (int) $result;
+                    }
+
+                    // Non-numeric string - log warning
+                    Console::warn("Non-numeric user ID in Redis for fd {$fd}: {$result}");
+                    return null;
+                }
+
+                // Handle integer case directly
+                if (is_int($result)) {
+                    return $result;
+                }
+
+                // Handle arrays (shouldn't happen with GET, but just in case)
+                if (is_array($result)) {
+                    Console::warn("Unexpected array response from Redis for key {$key} result " . json_encode($result));
+                    return 0;
+                }
+
+                // Handle boolean case (unlikely but possible)
+                if (is_bool($result)) {
+                    return $result ? 1 : 0; // Convert to 1/0 if needed
+                }
+
+                // Final fallback for any other type
+                Console::warn("Unhandled response type for fd {$fd}: " . gettype($result));
+                return null;
+
+            } catch (\Exception $e) {
+                Console::error("Failed to get user ID for fd {$fd}: " . $e->getMessage());
+                return null;
+            }
         });
     }
 }
