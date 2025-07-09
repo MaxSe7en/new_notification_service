@@ -461,7 +461,7 @@ class WebSocketServerOld
             if (empty($notifications) || !is_array($notifications)) {
                 return;
             }
-            Console::log("Processing " . count($notifications) . " queued notifications: " . json_encode($notifications));
+            // Console::log("Processing " . count($notifications) . " queued notifications: " . json_encode($notifications));
             foreach ($notifications as $notification) {
                 $data = json_decode($notification, true);
                 if (!$data || empty(trim($data['message'] ?? ''))) {
