@@ -18,7 +18,6 @@ class WebSocketServer
     private array $config;
     private array $config2;
     private array $heartbeatTimers = [];
-
     public function __construct(array $config = [])
     {
         $this->serverId = gethostname() . ':' . ($config['port'] ?? 9502);
@@ -26,44 +25,87 @@ class WebSocketServer
             'host' => '0.0.0.0',
             'port' => 9502
         ];
+
+        // Fixed configuration with better timeouts
         $this->config = array_merge([
-            'worker_num' => swoole_cpu_num() * 2,
-            'task_worker_num' => swoole_cpu_num() * 4,
+            'worker_num' => swoole_cpu_num(),
+            'task_worker_num' => swoole_cpu_num() * 2,
             'enable_coroutine' => true,
             'max_connection' => 1024,
-            'dispatch_mode' => 2, // IP dispatch for better consistency
-            'heartbeat_idle_time' => 120, // seconds
-            'heartbeat_check_interval' => 60, // seconds
-            // 'ssl_cert_file' => '/etc/ssl/certs/ssl-cert-snakeoil.pem',
-            // 'ssl_key_file' => '/etc/ssl/private/ssl-cert-snakeoil.key',
-            'ssl_cert_file' => '/etc/letsencrypt/live/winsstarts.com/fullchain.pem',
-            'ssl_key_file' => '/etc/letsencrypt/live/winsstarts.com/privkey.pem',
-            'ssl_protocols' => SWOOLE_SSL_TLSv1_2 | SWOOLE_SSL_TLSv1_3, // Enforce modern protocols
-            'ssl_ciphers' => 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384', // Strong ciphers
+            'dispatch_mode' => 2,
+
+            // FIXED: Better heartbeat configuration
+            'heartbeat_idle_time' => 180, // 3 minutes instead of 2
+            'heartbeat_check_interval' => 60, // Keep at 60 seconds
+
+            // SSL Configuration - Make optional
+            'ssl_cert_file' => $this->getSSLCertPath(),
+            'ssl_key_file' => $this->getSSLKeyPath(),
+            // 'ssl_protocols' => SWOOLE_SSL_TLSv1_2 | SWOOLE_SSL_TLSv1_3,
+            'ssl_ciphers' => 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256',
             'ssl_prefer_server_ciphers' => true,
-            'open_http2_protocol' => true,
-            'buffer_output_size' => 32 * 1024 * 1024, // 32MB
-            'socket_buffer_size' => 128 * 1024 * 1024, // 128MB
+            'open_http2_protocol' => false, // Disable HTTP/2 for WebSocket
+
+            // Buffer settings
+            'buffer_output_size' => 8 * 1024 * 1024, // Reduced to 8MB
+            'socket_buffer_size' => 32 * 1024 * 1024, // Reduced to 32MB
+            'package_max_length' => 8 * 1024 * 1024,
+
+            // Connection settings
             'reload_async' => true,
             'max_wait_time' => 60,
+            'tcp_fastopen' => true,
+            'open_tcp_nodelay' => true,
+            'open_cpu_affinity' => true,
+
+            // FIXED: Add these important settings
+            'max_request' => 0, // Don't restart workers
+            'enable_reuse_port' => true,
+            'backlog' => 128,
         ], $config);
 
         $this->redisService = new RedisService2();
         $this->notificationModel = new NotificationModel();
         $this->initializeRedisStructures();
-        // $this->verifyKeyTypes();
+    }
+
+    private function getSSLCertPath(): ?string
+    {
+        $certPath = '/etc/letsencrypt/live/winsstarts.com/fullchain.pem';
+        return (file_exists($certPath) && is_readable($certPath)) ? $certPath : null;
+    }
+
+    private function getSSLKeyPath(): ?string
+    {
+        $keyPath = '/etc/letsencrypt/live/winsstarts.com/privkey.pem';
+        return (file_exists($keyPath) && is_readable($keyPath)) ? $keyPath : null;
     }
 
     public function start(): void
     {
-        // Create server with host/port in constructor
         $host = $this->config['host'] ?? '0.0.0.0';
         $port = $this->config['port'] ?? 9502;
-        // Verify Redis key types before starting
-        // $this->verifyKeyTypes();
-        $this->server = new Server($host, $port, SWOOLE_PROCESS, SWOOLE_SOCK_TCP | SWOOLE_SSL);
 
-        // Remove host/port from config before passing to set()
+        // Check if SSL is available
+        $useSSL = $this->config['ssl_cert_file'] && $this->config['ssl_key_file'];
+
+        if ($useSSL) {
+            Console::info("Starting WebSocket server with SSL");
+            $this->server = new Server($host, $port, SWOOLE_PROCESS, SWOOLE_SOCK_TCP | SWOOLE_SSL);
+        } else {
+            Console::warn("Starting WebSocket server without SSL (certificates not found)");
+            $this->server = new Server($host, $port, SWOOLE_PROCESS, SWOOLE_SOCK_TCP);
+            // Remove SSL configs if not using SSL
+            unset(
+                $this->config['ssl_cert_file'],
+                $this->config['ssl_key_file'],
+                $this->config['ssl_protocols'],
+                $this->config['ssl_ciphers'],
+                $this->config['ssl_prefer_server_ciphers']
+            );
+        }
+
+        // Remove host/port from config
         $serverConfig = $this->config;
         unset($serverConfig['host'], $serverConfig['port']);
 
@@ -85,12 +127,12 @@ class WebSocketServer
 
     public function onStart(Server $server): void
     {
-        Console::info("WebSocket server started on wss://{$this->config2['host']}:{$this->config2['port']}");
+        // $protocol = $this->config['ssl_cert_file'] ? 'wss' : 'ws';
+        Console::info("WebSocket server started on ://{$this->config2['host']}:{$this->config2['port']}");
 
-        // Register this server instance with extended TTL
         $this->redisService->registerServer($this->serverId);
 
-        // Setup cleanup timers
+        // Cleanup and registration timers
         Timer::tick(60000, [$this, 'cleanupStaleServers']);
         Timer::tick(30000, function () {
             $this->redisService->registerServer($this->serverId);
@@ -100,13 +142,13 @@ class WebSocketServer
     public function onWorkerStart(Server $server, int $workerId): void
     {
         if ($workerId < $this->config['worker_num']) {
-            // Health checks with less frequency
-            Timer::tick($this->config['heartbeat_check_interval'] * 1000, function () {
+            // FIXED: Less aggressive connection health checks
+            Timer::tick(90000, function () { // Every 90 seconds instead of 60
                 $this->checkConnectionHealth();
             });
 
             // Process queued notifications
-            Timer::tick(10000, function () use ($server) { // 10 seconds instead of 5
+            Timer::tick(15000, function () use ($server) { // Every 15 seconds
                 $server->task(['type' => 'process_queued_notifications']);
             });
         }
@@ -118,17 +160,18 @@ class WebSocketServer
             $userId = $this->validateAndGetUserId($request);
             $fd = $request->fd;
 
-            // Track connection with extended TTL (2x heartbeat idle time)
-            $this->redisService->trackConnection(
-                $userId,
-                $fd,
-                $this->config['heartbeat_idle_time'] * 2
-            );
+            Console::info("New connection: User {$userId} (fd: {$fd})");
 
-            // Less aggressive heartbeat (every 45 seconds)
-            $this->heartbeatTimers[$fd] = Timer::tick(45000, function () use ($server, $fd) {
+            // FIXED: Longer TTL for connection tracking
+            $this->redisService->trackConnection($userId, $fd, 300); // 5 minutes
+
+            // FIXED: Synchronized heartbeat - every 60 seconds to match client
+            $this->heartbeatTimers[$fd] = Timer::tick(60000, function () use ($server, $fd) {
                 if ($server->exists($fd)) {
-                    $server->push($fd, json_encode(['type' => 'ping']));
+                    $server->push($fd, json_encode([
+                        'type' => 'ping',
+                        'timestamp' => time()
+                    ]));
                 } else {
                     Timer::clear($this->heartbeatTimers[$fd]);
                     unset($this->heartbeatTimers[$fd]);
@@ -151,31 +194,29 @@ class WebSocketServer
                 throw new \InvalidArgumentException("Invalid JSON format");
             }
 
-            // Get user ID and validate connection
+            // FIXED: More lenient connection validation
             $userId = $this->redisService->getConnectionUserId($frame->fd);
-            if (!$userId || !$this->server->exists($frame->fd)) {
-                // Console::warn("Message from invalid connection (fd: {$frame->fd})");
-                $server->close($frame->fd);
-                return;
+            if (!$userId) {
+                Console::warn("Message from unknown connection (fd: {$frame->fd})");
+                return; // Don't close immediately
             }
 
-            // Rest of your message handling logic...
+            // Update connection timestamp
+            $this->redisService->trackConnection($userId, $frame->fd, 300);
+
             $this->handleMessage($data, $frame->fd, $userId);
 
         } catch (\Exception $e) {
             Console::error("Message handling error: " . $e->getMessage());
-            if (isset($frame->fd) && $server->exists($frame->fd)) {
-                $server->push($frame->fd, json_encode([
-                    'type' => 'error',
-                    'message' => 'Internal server error'
-                ]));
-            }
+            // Don't close connection on message errors
         }
     }
 
     public function onClose(Server $server, int $fd): void
     {
         try {
+            Console::info("Connection closed: fd {$fd}");
+
             // Clear heartbeat timer
             if (isset($this->heartbeatTimers[$fd])) {
                 Timer::clear($this->heartbeatTimers[$fd]);
@@ -184,15 +225,12 @@ class WebSocketServer
 
             // Clean up Redis entries
             $this->redisService->executeWithRetry(function ($client) use ($fd) {
-                $pipe = $client->pipeline();
                 $userId = $client->get(RedisService2::CONNECTION_PREFIX . $fd);
-
                 if ($userId) {
-                    $pipe->hdel(RedisService2::USER_CONNECTION_MAP, $userId);
+                    $client->hdel(RedisService2::USER_CONNECTION_MAP, $userId);
                 }
-                $pipe->hdel(RedisService2::FD_USER_MAP, $fd);
-                $pipe->del(RedisService2::CONNECTION_PREFIX . $fd);
-                $pipe->execute();
+                $client->hdel(RedisService2::FD_USER_MAP, $fd);
+                $client->del(RedisService2::CONNECTION_PREFIX . $fd);
             });
 
         } catch (\Exception $e) {
@@ -202,33 +240,33 @@ class WebSocketServer
 
     public function onTask(Server $server, int $taskId, int $srcWorkerId, $data): void
     {
-        try {
-            switch ($data['type'] ?? '') {
-                case 'process_queued_notifications':
-                    $this->processQueuedNotifications();
-                    break;
+        // try {
+        //     switch ($data['type'] ?? '') {
+        //         case 'process_queued_notifications':
+        //             $this->processQueuedNotifications();
+        //             break;
 
-                case 'send_notification':
-                    $message = trim($data['message'] ?? '');
-                    if ($message !== '') {
-                        $this->sendDirectNotification(
-                            $data['user_id'],
-                            $message,
-                            $data['event'] ?? 'notification'
-                        );
-                    }
-                    break;
+        //         case 'send_notification':
+        //             $message = trim($data['message'] ?? '');
+        //             if ($message !== '') {
+        //                 $this->sendDirectNotification(
+        //                     $data['user_id'],
+        //                     $message,
+        //                     $data['event'] ?? 'notification'
+        //                 );
+        //             }
+        //             break;
 
-                case 'broadcast':
-                    $message = trim($data['message'] ?? '');
-                    if ($message !== '') {
-                        $this->broadcastNotification($message, $data['event'] ?? 'broadcast');
-                    }
-                    break;
-            }
-        } catch (\Exception $e) {
-            Console::error("Task error: " . $e->getMessage());
-        }
+        //         case 'broadcast':
+        //             $message = trim($data['message'] ?? '');
+        //             if ($message !== '') {
+        //                 $this->broadcastNotification($message, $data['event'] ?? 'broadcast');
+        //             }
+        //             break;
+        //     }
+        // } catch (\Exception $e) {
+        //     Console::error("Task error: " . $e->getMessage());
+        // }
     }
 
     public function onFinish(Server $server, int $taskId, string $data): void
@@ -236,21 +274,107 @@ class WebSocketServer
         // Optional: Handle task completion if needed
     }
 
-    private function validateAndGetUserId($request): int
+    // FIXED: Improved connection validation
+    private function isValidConnection($fd): bool
     {
-        parse_str($request->server['query_string'] ?? '', $query);
-        if (!isset($query['userId']) || !is_numeric($query['userId'])) {
-            throw new \InvalidArgumentException("Invalid user ID");
+        if (empty($fd) || !is_numeric($fd)) {
+            return false;
         }
 
-        $userId = (int) $query['userId'];
+        $fd = (int) $fd;
 
-        // Optional: Add additional validation (e.g., token verification)
+        try {
+            // Check Swoole first (faster)
+            if (!$this->server->exists($fd)) {
+                return false;
+            }
 
-        return $userId;
+            // Then check Redis
+            return $this->redisService->executeWithRetry2(function ($client) use ($fd) {
+                return (bool) $client->exists(RedisService2::CONNECTION_PREFIX . $fd);
+            });
+
+        } catch (\Exception $e) {
+            Console::error("Connection validation failed for fd {$fd}: " . $e->getMessage());
+            return false;
+        }
     }
 
-    public function onShutdown(): void
+    // FIXED: More gentle connection health checking
+    private function checkConnectionHealth(): void
+    {
+        try {
+            $this->redisService->executeWithRetry(function ($client) {
+                $connections = $this->redisService->safeHGetAll(RedisService2::FD_USER_MAP);
+
+                foreach ($connections as $fd => $userId) {
+                    if (empty($fd) || !is_numeric($fd)) {
+                        $this->cleanupStaleConnection($userId, $fd);
+                        continue;
+                    }
+
+                    $fd = (int) $fd;
+
+                    // Only check Swoole existence (Redis might be slower)
+                    if (!$this->server->exists($fd)) {
+                        Console::info("Cleaning up disconnected fd {$fd} for user {$userId}");
+                        $this->cleanupStaleConnection($userId, $fd);
+                    }
+                }
+            });
+        } catch (\Exception $e) {
+            Console::error("Health check failed: " . $e->getMessage());
+        }
+    }
+
+    // Rest of your methods remain the same...
+    private function handleMessage(array $data, int $fd, int $userId): void
+    {
+         Console::log("Received message from user {$userId}: " . json_encode($data));
+        switch ($data['action'] ?? '') {
+            case 'ping':
+                $this->server->push($fd, json_encode([
+                    'type' => 'pong',
+                    'timestamp' => time()
+                ]));
+                break;
+
+            case 'pong':
+                // Client responded to our ping
+                break;
+
+            case 'get_notifications':
+                $counts = $this->notificationModel->getNotificationCounts((string) $userId);
+                $this->server->push($fd, json_encode([
+                    'type' => 'notification_count',
+                    'data' => $counts
+                ]));
+                break;
+
+            case 'send_notification':
+                $this->sendDirectNotification(
+                    $data['user_id'],
+                    $data['message'] ?? '',
+                    $data['event'] ?? 'notification'
+                );
+                break;
+
+            case 'mark_read':
+                if (isset($data['notification_id'])) {
+                    $this->server->task([
+                        'type' => 'mark_notification_read',
+                        'user_id' => $userId,
+                        'notification_id' => $data['notification_id']
+                    ]);
+                }
+                break;
+
+            default:
+                Console::warn("Unknown action: " . ($data['action'] ?? 'none'));
+        }
+    }
+
+        public function onShutdown(): void
     {
         // Clean up all server registrations
         $this->redisService->executeWithRetry(function ($client) {
@@ -282,47 +406,6 @@ class WebSocketServer
 
         } catch (\Exception $e) {
             Console::error("Initial data error: " . $e->getMessage());
-        }
-    }
-
-    private function handleMessage(array $data, int $fd, int $userId): void
-    {
-        // Console::log("Received message from user {$userId}: " . json_encode($data));
-        switch ($data['action'] ?? '') {
-            case 'ping':
-                $this->server->push($fd, json_encode(['type' => 'pong']));
-                break;
-
-            case 'get_notifications':
-                $counts = $this->notificationModel->getNotificationCounts((string) $userId);
-                $this->server->push($fd, json_encode([
-                    'type' => 'notification_count',
-                    'data' => $counts
-                ]));
-                break;
-            case 'send_notification':
-                $this->sendDirectNotification(
-                    $data['user_id'],
-                    $data['message'] ?? '',
-                    $data['event'] ?? 'notification'
-                );
-                break;
-
-            case 'mark_read':
-                if (isset($data['notification_id'])) {
-                    $this->server->task([
-                        'type' => 'mark_notification_read',
-                        'user_id' => $userId,
-                        'notification_id' => $data['notification_id']
-                    ]);
-                }
-                break;
-
-            default:
-                $this->server->push($fd, json_encode([
-                    'type' => 'error',
-                    'message' => 'Unknown action'
-                ]));
         }
     }
 
@@ -396,7 +479,7 @@ class WebSocketServer
         });
     }
 
-    private function isValidConnection($fd): bool
+    private function isValidConnection2($fd): bool
     {
         // Comprehensive type and value validation
         if (
@@ -433,6 +516,37 @@ class WebSocketServer
             Console::error("Connection validation failed for fd {$fd}: " . $e->getMessage());
             return false;
         }
+    }
+
+    private function isValidConnectionss($fd): bool
+    {
+        // Simplified validation
+        if (!is_numeric($fd) || $fd <= 0) {
+            return false;
+        }
+
+        $fd = (int) $fd;
+
+        try {
+            return $this->server->exists($fd);
+        } catch (\Exception $e) {
+            Console::error("Connection validation failed: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    private function validateAndGetUserId($request): int
+    {
+        parse_str($request->server['query_string'] ?? '', $query);
+        if (!isset($query['userId']) || !is_numeric($query['userId'])) {
+            throw new \InvalidArgumentException("Invalid user ID");
+        }
+
+        $userId = (int) $query['userId'];
+
+        // Optional: Add additional validation (e.g., token verification)
+
+        return $userId;
     }
 
     private function cleanupStaleConnection($userId, $fd): void
@@ -477,7 +591,7 @@ class WebSocketServer
         });
     }
 
-    private function checkConnectionHealth(): void
+    private function checkConnectionHealths(): void
     {
         $this->redisService->executeWithRetry(function ($client) {
             // Use safeHGetAll as recommended - this handles type checking and empty cases
