@@ -330,7 +330,7 @@ class WebSocketServer
     // Rest of your methods remain the same...
     private function handleMessage(array $data, int $fd, int $userId): void
     {
-         Console::log("Received message from user {$userId}: " . json_encode($data));
+        Console::log("Received message from user {$userId}: " . json_encode($data));
         switch ($data['action'] ?? '') {
             case 'ping':
                 $this->server->push($fd, json_encode([
@@ -374,7 +374,7 @@ class WebSocketServer
         }
     }
 
-        public function onShutdown(): void
+    public function onShutdown(): void
     {
         // Clean up all server registrations
         $this->redisService->executeWithRetry(function ($client) {
