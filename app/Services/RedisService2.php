@@ -3,6 +3,7 @@ namespace App\Services;
 
 use Predis\Client;
 use App\Exceptions\Console;
+use Swoole\WebSocket\Server;
 
 class RedisService2
 {
@@ -178,19 +179,20 @@ class RedisService2
     // Add specific methods for our key patterns
     public function registerServer(string $serverId): void
     {
-        $this->executeWithRetry(function ($client) use ($serverId) {
+        $this->executeWithRetry2(function ($client) use ($serverId) {
             $client->hset(self::SERVER_REGISTRY, $serverId, time());
         });
     }
 
-    public function trackConnection(int $userId, int $fd, int $ttl): void
+    public function trackConnection(int $userId, int $fd, int $ttl, $msg = ''): void
     {
+        Console::info("Tracking connection: userId=$userId, fd=$fd");
         // Validate inputs first
         if ($fd <= 0 || $userId <= 0) {
             throw new \InvalidArgumentException("Invalid connection parameters");
         }
 
-        $this->executeWithRetry(function ($client) use ($userId, $fd, $ttl) {
+        $this->executeWithRetry2(function ($client) use ($userId, $fd, $ttl) {
             $pipe = $client->pipeline();
 
             // Use consistent typing for Redis keys
@@ -208,11 +210,11 @@ class RedisService2
 
     public function getConnectionUserId(int $fd): ?int
     {
-        return $this->executeWithRetry(function ($client) use ($fd) {
+        return $this->executeWithRetry2(function ($client) use ($fd) {
             try {
                 $key = self::CONNECTION_PREFIX . $fd;
                 $result = $client->get($key);
-
+                Console::info("Getting user ID for fd {$fd} from Redis key {$key}");
                 // Handle null case first
                 if ($result === null) {
                     return 0;
@@ -266,4 +268,45 @@ class RedisService2
             }
         });
     }
+
+    public function getConnectionFdByUserId(int $userId): ?int
+    {
+        return $this->executeWithRetry2(function ($client) use ($userId) {
+            $fd = $client->hget(self::USER_CONNECTION_MAP, (string) $userId);
+            return is_numeric($fd) ? (int) $fd : null;
+        });
+    }
+
+    public function getConnectionUserIdByFd(Server $server, int $fd): ?int
+    {
+        return $this->executeWithRetry2(function ($client) use ($server, $fd) {
+            $swooleKnows = $server->exists($fd);
+            $userId = $client->hget(self::USER_CONNECTION_MAP, (string) $fd);
+            Console::info("FD {$fd} exists in swoole: " . ($swooleKnows ? 'yes' : 'no') . ", userId in redis: " . var_export($userId, true));
+            return is_numeric($userId) ? (int) $userId : null;
+        });
+    }
+
+    public function resolveUserIdFromFd(Server $server, int $fd): ?int
+    {
+        return $this->executeWithRetry2(function ($client) use ($server, $fd) {
+            // Make sure Swoole knows the connection exists
+            $swooleKnows = $server->exists($fd);
+            $redisUserId = $client->hget(self::USER_CONNECTION_MAP, (string) $fd);
+
+            Console::info("FD {$fd} exists in swoole: " . ($swooleKnows ? 'yes' : 'no') . ", userId in redis: " . var_export($redisUserId, true));
+
+            if (!$server->exists($fd)) {
+                Console::warn("FD {$fd} found in Redis but not in Swoole — cleaning up...");
+                return null;
+            }
+
+            // Get userId from Redis
+            $userId = $client->hget(self::FD_USER_MAP, (string) $fd);
+
+            // Must be numeric and not empty
+            return is_numeric($userId) ? (int) $userId : null;
+        });
+    }
+
 }
