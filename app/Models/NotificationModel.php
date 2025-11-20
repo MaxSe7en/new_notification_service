@@ -21,82 +21,76 @@ class NotificationModel
 
     public function create($userId, $type, $message)
     {
-        $stmt = $this->db->prepare("INSERT INTO notifications (user_id, ms_type, message, status) VALUES (?, ?, ?, 'pending')");
-        return $stmt->execute([$userId, $type, $message]);
+        $sql = "INSERT INTO notifications (user_id, ms_type, message, status) VALUES (?, ?, ?, 'pending')";
+        return DatabaseAccessors::insert($sql, [$userId, $type, $message]);
     }
 
     public function getPendingNotifications()
     {
-        $stmt = $this->db->prepare("SELECT * FROM notifications WHERE status = 'pending'");
-        $stmt->execute();
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $sql = "SELECT * FROM notifications WHERE status = 'pending'";
+
+        return DatabaseAccessors::selectAll($sql);
     }
 
     public function getPendingNotices()
     {
-        $stmt = $this->db->prepare("SELECT * FROM notices WHERE ms_type = 'personal'");
-        $stmt->execute();
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $sql = "SELECT * FROM notices WHERE ms_type = 'personal'";
+        return DatabaseAccessors::selectAll($sql);
     }
 
     public function getUserNotices($userId)
     {
-        $stmt = $this->db->prepare("
-        SELECT n.msg_id, n.title, n.content, n.send_by, n.ms_type, n.created_at, n.ms_status 
-        FROM notices n
-        LEFT JOIN notice_users nu ON n.msg_id = nu.notice_id AND nu.user_id = :userId
-        WHERE n.ms_type = 'general' OR nu.user_id IS NOT NULL
-        ORDER BY n.created_at DESC
-    ");
-
-        $stmt->execute([':userId' => $userId]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $sql = "
+            SELECT n.msg_id, n.title, n.content, n.send_by, n.ms_type, n.created_at, n.ms_status 
+            FROM notices n
+            LEFT JOIN notice_users nu ON n.msg_id = nu.notice_id AND nu.user_id = :userId
+            WHERE n.ms_type = 'general' OR nu.user_id IS NOT NULL
+            ORDER BY n.created_at DESC
+        ";
+        return DatabaseAccessors::selectAll($sql, [$userId]);
     }
 
     public function getAllPendingNotices()
     {
-        $stmt = $this->db->prepare("
-        SELECT n.msg_id, n.title, n.content, n.send_by, n.ms_type, n.created_at, n.ms_status, nu.user_id
-        FROM notices n
-        LEFT JOIN notice_users nu ON n.msg_id = nu.notice_id
-        WHERE n.ms_status = 'Active'
-        ORDER BY n.created_at DESC
-    ");
-
-        $stmt->execute();
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $sql = "
+            SELECT n.msg_id, n.title, n.content, n.send_by, n.ms_type, n.created_at, n.ms_status, nu.user_id
+            FROM notices n
+            LEFT JOIN notice_users nu ON n.msg_id = nu.notice_id
+            WHERE n.ms_status = 'Active'
+            ORDER BY n.created_at DESC
+        ";
+        return DatabaseAccessors::selectAll($sql);
     }
 
     public function getAllUsers()
     {
-        $stmt = $this->db->query("SELECT uid FROM users_test");
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $sql = "SELECT uid FROM users_test";
+        return DatabaseAccessors::selectAll($sql);
     }
 
     public function markNoticeAsSent($msgId)
     {
-        $stmt = $this->db->prepare("UPDATE notices SET ms_status = 'sent' WHERE msg_id = :msgId");
-        $stmt->execute([':msgId' => $msgId]);
+        $sql = "UPDATE notices SET ms_status = 'sent' WHERE msg_id = :msgId";
+        DatabaseAccessors::update($sql, [$msgId]);
     }
 
     public function getGeneralNotices()
     {
-        $stmt = $this->db->query("SELECT * FROM notices WHERE ms_type = 'general'");
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $sql = "SELECT * FROM notices WHERE ms_type = 'general'";
+        return DatabaseAccessors::selectAll($sql);
     }
 
     public function getNotificationCounts(string $userId)
     {
         try {
-            $totalStmt = $this->db->prepare("SELECT COUNT(*) as total FROM notifications WHERE user_id = :userId AND read_status = 'unread'");
-            $totalStmt->bindParam(':userId', $userId, PDO::PARAM_STR);
-            $totalStmt->execute();
-            $totalCount = $totalStmt->fetch(PDO::FETCH_ASSOC);
+            $totalSql = "SELECT COUNT(*) as total FROM notifications WHERE user_id = :userId AND read_status = 'unread'";
 
-            $generalStmt = $this->db->query("SELECT * FROM notices WHERE ms_type = 'general' AND ms_status = 'active'");
-            $generalNote = $generalStmt->fetchAll(PDO::FETCH_ASSOC);
+            $totalCount = DatabaseAccessors::select($totalSql, [$userId]);
+
+            $generalSql = "SELECT * FROM notices WHERE ms_type = 'general' AND ms_status = 'active'";
+            $generalNote = DatabaseAccessors::selectAll($generalSql);
             $generalCount = count($generalNote);
-            $personalStmt = $this->db->prepare("
+            $personalSql = "
                 SELECT COUNT(*) as personal
                 FROM notices
                 LEFT JOIN notice_users ON notices.msg_id = notice_users.msg_id
@@ -104,10 +98,8 @@ class NotificationModel
                 AND notices.ms_status = 'active'
                 AND notice_users.read_status = 'unread'
                 AND notice_users.user_id = :userId
-            ");
-            $personalStmt->bindParam(':userId', $userId, PDO::PARAM_STR);
-            $personalStmt->execute();
-            $personalCount = $personalStmt->fetch(PDO::FETCH_ASSOC);
+            ";
+            $personalCount = DatabaseAccessors::select($personalSql, [$userId]);
             // Console::log2('countssss ', $generalNote);
             return [
                 'system_notifications' => $totalCount['total'] ?? 0,
@@ -157,11 +149,11 @@ class NotificationModel
     /**
      * Get user notifications with pagination
      */
-    public function getUserNotifications(int $userId, int $limit = 20, int $offset = 0): array
+    public function getUserNotificationsOl(int $userId, int $limit = 20, int $offset = 0): array
     {
-        $sql = "SELECT * FROM notifications 
-                WHERE user_id = :user_id 
-                ORDER BY created_at DESC 
+        $sql = "SELECT * FROM notifications
+                WHERE user_id = :user_id
+                ORDER BY created_at DESC
                 LIMIT :limit OFFSET :offset";
 
         return DatabaseAccessors::selectAll($sql, [

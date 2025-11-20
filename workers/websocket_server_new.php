@@ -42,18 +42,19 @@ class NotificationServer
 
     private function initServer(): void
     {
-        $this->server = new Server("0.0.0.0", 9502, SWOOLE_PROCESS, SWOOLE_SOCK_TCP | SWOOLE_SSL);
+        $this->server = new Server("0.0.0.0", 9503);//, SWOOLE_PROCESS, SWOOLE_SOCK_TCP | SWOOLE_SSL);
 
         $this->server->set([
-            'ssl_cert_file' => '/etc/letsencrypt/live/winsstarts.com/fullchain.pem',
-            'ssl_key_file' => '/etc/letsencrypt/live/winsstarts.com/privkey.pem',
-            'ssl_protocols' => SWOOLE_SSL_TLSv1_2 | SWOOLE_SSL_TLSv1_3, // Enforce modern protocols
-            'ssl_ciphers' => 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384', // Strong ciphers
-            'ssl_prefer_server_ciphers' => true,
-            'open_http2_protocol' => true,
+            // 'ssl_cert_file' => '/etc/letsencrypt/live/winsstarts.com/fullchain.pem',
+            // 'ssl_key_file' => '/etc/letsencrypt/live/winsstarts.com/privkey.pem',
+            // 'ssl_protocols' => SWOOLE_SSL_TLSv1_2 | SWOOLE_SSL_TLSv1_3, // Enforce modern protocols
+            // 'ssl_ciphers' => 'ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384', // Strong ciphers
+            // 'ssl_prefer_server_ciphers' => true,
+            // 'open_http2_protocol' => true,
             'heartbeat_check_interval' => 60,
             'heartbeat_idle_time' => 120,
             'max_connection' => 1024,
+            'worker_num' => 1,
             'task_worker_num' => 4,
             'enable_coroutine' => true,
         ]);
@@ -73,7 +74,7 @@ class NotificationServer
 
     public function onStart(Server $server): void
     {
-        echo "WebSocket Server started on ws://0.0.0.0:9502\n";
+        echo "WebSocket Server started on ws://0.0.0.0:9503\n";
 
         // Global notification checker - runs every 5 seconds
         Timer::tick(5000, function () {
